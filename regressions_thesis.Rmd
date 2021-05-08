@@ -1,0 +1,677 @@
+---
+author: "Gadir Mamedov"
+title: "Beta regression and panel data"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    toc_depth: 5
+    number_sections: true
+    theme: lumen
+---
+
+## Aim:
+
+- Create an output of 5 models: only fixed effects beta, no fixed effects + predictors, predictors + fixed effects (no membership), predictors + lagged variable, plm + fixed, plm + fixed + lag 
+- check their heteroscedasticity and autocorrelation 
+- plot predictions for the best model to be used 
+
+## Helpers
+
+Libraries
+```{r}
+library(forecast)
+library(reshape)
+library(betareg)
+library(plm)
+library(ggplot2)
+library(knitr)
+library(dplyr)
+library(summarytools)
+library(Hmisc)
+library(car)
+library(sjPlot)
+library(lmtest)
+
+```
+
+Function to show output in the notebook
+```{r}
+show_output = function(model, robust = FALSE){
+  model = model
+  robust = robust
+  if(robust == TRUE){
+    knitr::knit_print(sjPlot::tab_model(model, show.se = TRUE, show.fstat = TRUE, show.aic = TRUE, show.loglik = TRUE, p.style = "stars", emph.p = TRUE, digits = 2, robust = TRUE, collapse.ci = TRUE))
+  }else{
+    
+    knitr::knit_print(sjPlot::tab_model(model, show.se = TRUE, show.fstat = TRUE, show.aic = TRUE, show.loglik = TRUE, p.style = "stars", emph.p = TRUE, digits = 2, collapse.ci = TRUE))
+  }
+}
+```
+
+## Data 
+
+> Data can be downloaded from this link and saved as a csv file. 
+
+[LINK to dataset](https://raw.githubusercontent.com/gzmamedov/Thesis2021/main/mamedov_thesis_data.csv)
+
+```{r}
+df_base = read.csv("mamedov_thesis_data.csv")
+```
+
+## Summary of all variables
+
+This dataset is a bit messy, and there is a lot of not relevant variables. 
+
+```{r fig.width=9, fig.height=6}
+print(dfSummary(df_base, valid.col = FALSE, graph.magnif = 0.75), 
+      max.tbl.height = 300, method = "render")
+```
+
+## Dependent variables
+
+1st variable - state reforms only 2nd variable - IPI-based progress retrieved from the reports 3nd variable - Control of Corruption index rescaled from 0 to 1 for the beta regression model.
+
+```{r}
+ggplot(df_base) +  
+  geom_line(aes(year,progress_corr_only, col = "yellow")) + 
+  geom_line(aes(year, progress_ipi, col = "red"))+ 
+  geom_line(aes(year, coc_norm,col = "blue"))+ 
+  facet_wrap(~country) + 
+  scale_x_continuous(breaks = seq(2003,2020, 1))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+  scale_color_identity(name = "Progress index",
+                          breaks = c("yellow", "red", "blue"),
+                          labels = c("Progress in state reforms", "IPI-based progress", "Control of Corruption Index"),
+                          guide = "legend")+
+  ylab("Progress")+
+  xlab("Year")+
+  ggtitle("Progress in the fight against corruption")
+```
+
+
+### Control of corruption index - original scale
+
+```{r}
+ggplot(df_base) + 
+  geom_line(aes(year, e_wbgi_cce))+
+  facet_wrap(~country) + 
+  scale_x_continuous(breaks = seq(2003,2020, 1))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+  ylab("CoC original scale")+
+  xlab("Year")
+```
+
+Control of Corruption index is less volatile for majority of countries, and only Georgia has seen the growth over years. Thus we can conclude that not counting for time effect can lead to unnecessary multiplication of data. IPI-based progress index shows less association between years within countries.
+
+
+## Notes before running models 
+
+We will use two types of regression models: 
+
+- Beta regression model (from betareg library)
+- Panel regression (from plm library)
+
+Whar R-squared is used for each model? 
+
+- **Beta-regression**
+
+> Pseudo-R2 formula = cor(log(y/(1 - y)), x %\*% beta)\^2
+
+- **Panel regression**
+
+[Source](https://stats.stackexchange.com/questions/79723/interpretation-of-r2-in-fixed-effects-panel-regression/79734#79734)
+
+**overall 𝑅2**: that's the usual 𝑅2 which you would get from regressing your dependent variable 𝑌𝑖,𝑡 on the explanatory variables 𝑋𝑖,𝑡.
+
+**between 𝑅2**: if you collapse your data and remove the time component by taking the means of your variables for each panel unit individually, the 𝑅2 from regressing these time de-meaned data gives the between 𝑅2. That's the regression 𝑌𝑖,. on 𝑋𝑖,. (where . replaces the time-subscript to show that time has been averaged out for each panel unit 𝑖). So this disregards all the within information in the data.
+
+**within 𝑅2**: this comes from the prediction equation (𝑌ˆ𝑖,𝑡−𝑌⎯⎯⎯⎯ˆ𝑖,.)=(𝑋𝑖,𝑡−𝑋⎯⎯⎯⎯⎯𝑖,.)𝛽ˆ), where 𝑌⎯⎯⎯⎯ˆ𝑖,. and 𝑋⎯⎯⎯⎯⎯ˆ𝑖,. are the grand means of your variables. So the within 𝑅2 gives you the goodness of fit measure for the individual mean de-trended data which disregards all the between information in the data.
+
+For each type of PLM regression we get a corresponding R2. Beta regression, instead, shows only overall R2. It is misleading to compare within-R2 (which explains variance - variance explained by fixed effects) and overall R2 of the beta regression predictions. Thus, one solution is to compare overall R-squared. Basically, our idea is to get the best working model or understand if we get similar results using different models. 
+
+## Only fixed effects models - Beta regression 
+
+### IPI-based index
+
+```{r}
+model_ipi_only_fixed  = betareg(progress_ipi~country |country, link = "logit", data = df_base)
+```
+
+```{r}
+show_output(model_ipi_only_fixed)
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(model_ipi_only_fixed)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(model_ipi_only_fixed)
+```
+
+Durbin-Watson test
+```{r}
+dwtest(model_ipi_only_fixed)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(model_ipi_only_fixed))
+```
+
+
+### Control of Corruption index
+
+```{r}
+model_coc_only_fixed  = betareg(coc_norm~country |country, link = "logit", data = df_base)
+```
+
+```{r}
+show_output(model_coc_only_fixed)
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(model_coc_only_fixed)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(model_coc_only_fixed)
+```
+
+Durbin-Watson test
+```{r}
+dwtest(model_coc_only_fixed)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(model_coc_only_fixed))
+```
+
+
+## Only predictors - Beta regression 
+
+### IPI-based index
+```{r}
+model_ipi_only_pred = betareg(progress_ipi~membership+assistance_man_per_capita*e_wbgi_gee+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_ipi+v2x_cspart-e_wbgi_gee |membership+assistance_man_per_capita*e_wbgi_gee+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_ipi+v2x_cspart-e_wbgi_gee, link = "logit", data = df_base)
+```
+
+```{r}
+show_output(model_ipi_only_pred)
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(model_ipi_only_pred)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(model_ipi_only_pred)
+```
+
+Durbin-Watson test
+```{r}
+dwtest(model_ipi_only_pred)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(model_ipi_only_pred))
+```
+
+
+### Control of Corruption index
+
+```{r}
+model_coc_only_pred  = betareg(coc_norm~membership+assistance_man_per_capita+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_coc+v2x_cspart |membership+assistance_man_per_capita+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_coc+v2x_cspart, link = "logit", data = df_base)
+```
+
+```{r}
+show_output(model_coc_only_pred)
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(model_coc_only_pred)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(model_coc_only_pred)
+```
+
+Durbin-Watson test
+```{r}
+dwtest(model_coc_only_pred)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(model_coc_only_pred))
+```
+
+
+## Fixed effects + predictors (no membership) - Beta regression 
+
+### IPI-based index
+```{r}
+model_ipi_fe_pred = betareg(progress_ipi~country+assistance_man_per_capita*e_wbgi_gee+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_ipi+v2x_cspart-e_wbgi_gee |country+assistance_man_per_capita*e_wbgi_gee+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_ipi+v2x_cspart-e_wbgi_gee, link = "logit", data = df_base)
+```
+
+```{r}
+show_output(model_ipi_fe_pred)
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(model_ipi_fe_pred)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(model_ipi_fe_pred)
+```
+
+Durbin-Watson test
+```{r}
+dwtest(model_ipi_fe_pred)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(model_ipi_fe_pred))
+```
+
+
+### Control of Corruption index
+
+```{r}
+model_coc_fe_pred  = betareg(coc_norm~country+assistance_man_per_capita+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_coc+v2x_cspart |country+assistance_man_per_capita+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_coc+v2x_cspart, link = "logit", data = df_base)
+```
+
+```{r}
+show_output(model_coc_fe_pred)
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(model_coc_fe_pred)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(model_coc_fe_pred)
+```
+
+Durbin-Watson test
+```{r}
+dwtest(model_coc_fe_pred)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(model_coc_fe_pred))
+```
+
+## Correction of beta regressions with lagged variables
+
+Autocorrelation becomes an issue for all models. A very strong autocorrelation observed in the 1 step lag. Thus, if the lag is included into the model, we can capture this part and provide more robust results. 
+
+
+Let's create lag variables. NAs filled with the same value. 
+
+```{r}
+  lag_df = df_base %>%
+  arrange(country, year) %>% 
+  group_by(country) %>% 
+  mutate(progress_ipi_lag = coalesce(Hmisc::Lag(progress_ipi), progress_ipi), coc_norm_lag = coalesce(  Hmisc::Lag(coc_norm), coc_norm), progress_ipi_logit_lag =  coalesce(Hmisc::Lag(progress_ipi_logit), progress_ipi_logit) , e_wbgi_cce_lag= coalesce(Hmisc::Lag(e_wbgi_cce), e_wbgi_cce) ) %>% 
+  ungroup()
+```
+
+```{r}
+lag_df[c("country", "year", "progress_ipi", "progress_ipi_lag", "coc_norm", "coc_norm_lag", "progress_ipi_logit", "progress_ipi_logit_lag", "e_wbgi_cce", "e_wbgi_cce_lag")]
+```
+
+
+## Fixed effects + predictors + lagged variable - Beta regression 
+
+### IPI-based index
+```{r}
+model_ipi_fe_pred_lag= betareg(progress_ipi~progress_ipi_lag+country+assistance_man_per_capita*e_wbgi_gee+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_ipi+v2x_cspart-e_wbgi_gee | progress_ipi_lag+country+assistance_man_per_capita*e_wbgi_gee+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_ipi+v2x_cspart-e_wbgi_gee, link = "logit", data = lag_df)
+```
+
+```{r}
+show_output(model_ipi_fe_pred_lag)
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(model_ipi_fe_pred_lag)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(model_ipi_fe_pred_lag)
+```
+
+Durbin-Watson test
+```{r}
+dwtest(model_ipi_fe_pred_lag)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(model_ipi_fe_pred_lag))
+```
+
+
+### Control of Corruption index
+
+```{r}
+model_coc_fe_pred_lag  = betareg(coc_norm~coc_norm_lag+country+assistance_man_per_capita+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_coc+v2x_cspart |coc_norm_lag+country+assistance_man_per_capita+export_per_capita+visa_dialogue+v2smpolsoc+socialisation_coc+v2x_cspart, link = "logit", data = lag_df)
+```
+
+```{r}
+show_output(model_coc_fe_pred_lag)
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(model_coc_fe_pred_lag)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(model_coc_fe_pred_lag)
+```
+
+Durbin-Watson test
+```{r}
+dwtest(model_coc_fe_pred_lag)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(model_coc_fe_pred_lag))
+```
+
+## PLM + fixed effects
+
+### IPI-based index
+
+```{r}
+plm_model_ipi = plm(progress_ipi_logit~membership+visa_dialogue+ assistance_man_per_capita*e_wbgi_gee+v2x_cspart+v2smpolsoc+socialisation_ipi_logit+export_per_capita-e_wbgi_gee, df_base, index = c("country"), model = "within")
+```
+
+```{r}
+show_output(plm_model_ipi)
+```
+
+```{r}
+#between r2 squared - explanation between panels
+print(r.squared(plm_model_ipi, model = "between"),dfcor = TRUE) 
+#within r2 squared - explanation within panel
+print(r.squared(plm_model_ipi, model = "within"), dfcor = TRUE) 
+#pooled r2 squared - weighted
+print(r.squared(plm_model_ipi, model = "pooling"), dfcor = TRUE) 
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(plm_model_ipi)
+```
+
+Durbin-Watson test
+```{r}
+pdwtest(plm_model_ipi)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(plm_model_ipi))
+```
+
+### Control of Corruption index
+
+```{r}
+plm_model_coc = plm(e_wbgi_cce~membership+visa_dialogue+ assistance_man_per_capita+v2x_cspart+v2smpolsoc+socialisation_e_wbgi_cce+export_per_capita, df_base, index = c("country"), model = "within")
+```
+
+```{r}
+show_output(plm_model_coc)
+```
+
+```{r}
+#between r2 squared - explanation between panels
+print(r.squared(plm_model_coc, model = "between"), dfcor = TRUE) 
+#within r2 squared - explanation within panel
+print(r.squared(plm_model_coc, model = "within"),dfcor = TRUE) 
+#pooled r2 squared - weighted
+print(r.squared(plm_model_coc, model = "pooling"), dfcor = TRUE) 
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(plm_model_coc)
+```
+
+Durbin-Watson test
+```{r}
+pdwtest(plm_model_coc)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(plm_model_coc))
+```
+
+
+
+## PLM + fixed effects + lagged variable
+
+### IPI-based index
+
+```{r}
+plm_model_ipi_lag = plm(progress_ipi_logit~progress_ipi_logit_lag+membership+visa_dialogue+ assistance_man_per_capita*e_wbgi_gee+v2x_cspart+v2smpolsoc+socialisation_ipi_logit+export_per_capita-e_wbgi_gee, lag_df, index = c("country"), model = "within")
+```
+
+```{r}
+show_output(plm_model_ipi_lag)
+```
+
+```{r}
+#between r2 squared - explanation between panels
+print(r.squared(plm_model_ipi_lag, model = "between"), dfcor = TRUE) 
+#within r2 squared - explanation within panel
+print(r.squared(plm_model_ipi_lag, model = "within"), , dfcor = TRUE) 
+#pooled r2 squared - weighted
+print(r.squared(plm_model_ipi_lag, model = "pooling"),, dfcor = TRUE) 
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(plm_model_ipi_lag)
+```
+
+Durbin-Watson test
+```{r}
+pdwtest(plm_model_ipi_lag)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(plm_model_ipi_lag))
+```
+
+
+### Control of Corruption index
+
+```{r}
+plm_model_coc_lag = plm(e_wbgi_cce~e_wbgi_cce_lag+membership+visa_dialogue+ assistance_man_per_capita+v2x_cspart+v2smpolsoc+socialisation_e_wbgi_cce+export_per_capita, lag_df, index = c("country"), model = "within")
+```
+
+```{r}
+show_output(plm_model_coc_lag)
+```
+
+```{r}
+#between r2 squared - explanation between panels
+print(r.squared(plm_model_coc_lag, model = "between"), dfcor = TRUE) 
+#within r2 squared - explanation within panel
+print(r.squared(plm_model_coc_lag, model = "within"), , dfcor = TRUE) 
+#pooled r2 squared - weighted
+print(r.squared(plm_model_coc_lag, model = "pooling"),, dfcor = TRUE) 
+```
+
+**DIAGNOSTICS**
+
+Breush-Pagan test
+```{r}
+bptest(plm_model_coc_lag)
+```
+
+Durbin-Watson test
+```{r}
+pdwtest(plm_model_coc_lag)
+```
+
+Autocorrelation plot
+```{r}
+checkresiduals(resid(plm_model_coc_lag))
+```
+
+
+## Final results
+
+2 models passed all tests: Beta regression with lagged variable and Panel regression with lagged variable
+
+## IPI-index
+```{r}
+knitr::knit_print(sjPlot::tab_model(model_ipi_fe_pred, model_ipi_fe_pred_lag, plm_model_ipi, plm_model_ipi_lag, show.se = TRUE, show.fstat = TRUE, show.aic = TRUE, show.loglik = TRUE, p.style = "stars", emph.p = TRUE, digits = 2, collapse.ci = TRUE))
+```
+
+## Control of corruption
+```{r}
+knitr::knit_print(sjPlot::tab_model(model_coc_fe_pred, model_coc_fe_pred_lag, plm_model_coc, plm_model_coc_lag, show.se = TRUE, show.fstat = TRUE, show.aic = TRUE, show.loglik = TRUE, p.style = "stars", emph.p = TRUE, digits = 2, collapse.ci = TRUE))
+```
+
+## Membership opportunity 
+
+### IPI-based index
+```{r}
+model_ipi_fe_pred_lag_membership= betareg(progress_ipi~progress_ipi_lag+membership |progress_ipi_lag+membership, link = "logit", data = lag_df)
+```
+
+### Control of Corruption 
+
+```{r}
+model_coc_fe_pred_lag_membership= betareg(coc_norm~coc_norm_lag+membership |coc_norm_lag+membership, link = "logit", data = lag_df)
+```
+
+
+```{r}
+knitr::knit_print(sjPlot::tab_model(model_ipi_fe_pred_lag_membership, model_coc_fe_pred_lag_membership, show.se = TRUE, show.fstat = TRUE, show.aic = TRUE, show.loglik = TRUE, p.style = "stars", emph.p = TRUE, digits = 2, collapse.ci = TRUE))
+```
+
+
+## Presentable results 
+
+In the end for this study I illustrate following model 
+* fixed effects model
+* fixed effects model + lag
+* membership + lag
+
+### IPI-based index
+
+```{r}
+knitr::knit_print(sjPlot::tab_model(model_ipi_fe_pred, model_ipi_fe_pred_lag, model_ipi_fe_pred_lag_membership, show.se = TRUE, show.fstat = TRUE, show.aic = TRUE, show.loglik = TRUE, p.style = "stars", emph.p = TRUE, digits = 2, collapse.ci = TRUE))
+```
+
+### Control of Corruption
+
+```{r}
+knitr::knit_print(sjPlot::tab_model(model_coc_fe_pred, model_coc_fe_pred_lag,model_coc_fe_pred_lag_membership, show.se = TRUE, show.fstat = TRUE, show.aic = TRUE, show.loglik = TRUE, p.style = "stars", emph.p = TRUE, digits = 2, collapse.ci = TRUE))
+```
+
+
+## Notes
+
+No problems with membership models
+
+```{r}
+checkresiduals(resid(model_ipi_fe_pred_lag_membership))
+```
+
+```{r}
+checkresiduals(resid(model_coc_fe_pred_lag_membership))
+```
+
+## Predictions 
+
+Let's get predicted values first
+```{r}
+lag_df$pred_ipi =  predict(model_ipi_fe_pred_lag, lag_df)
+lag_df$pred_coc =  predict(model_coc_fe_pred_lag, lag_df)
+```
+
+```{r}
+ggplot(df_base) + 
+  geom_line(aes(year, progress_ipi, col = "black")) + 
+  geom_line(aes(year, pred_ipi, col = "red"))+
+  facet_wrap(~country) + 
+  scale_x_continuous(breaks = seq(2003,2020, 1))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+  scale_color_identity(name = "Progress index",
+                          breaks = c("black", "red"),
+                          labels = c("IPI-based progress(original)", "Predicted values - Betareg"),
+                          guide = "legend")+
+  ylab("Progress")+
+  xlab("Year")+
+  ggtitle("Real and predicted values for IPI-based progress")
+```
+
+```{r}
+ggplot(df_base) + 
+  geom_line(aes(year, coc_norm, col = "black")) + 
+  geom_line(aes(year, pred_coc, col = "red"))+
+  facet_wrap(~country) + 
+  scale_x_continuous(breaks = seq(2003,2020, 1))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+  scale_color_identity(name = "Progress index",
+                          breaks = c("black", "red"),
+                          labels = c("Control of Corruption (original)", "Predicted values - Betareg"),
+                          guide = "legend")+
+  ylab("Progress")+
+  xlab("Year")+
+  ggtitle("Real and predicted values for Control of Corruption")
+```
+
